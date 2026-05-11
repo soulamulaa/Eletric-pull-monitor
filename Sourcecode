@@ -1,0 +1,87 @@
+
+# Electric Pull Monitor GUI
+import os
+import psutil
+import subprocess
+import tkinter as tk
+
+def get_cpu_power():
+    rapl_path = "/sys/class/powercap/intel-rapl:0/energy_uj"
+    if os.path.exists(rapl_path):
+        try:
+            with open(rapl_path) as f:
+                energy_uj = int(f.read())
+            return f"CPU Energy: {energy_uj / 1_000_000:.3f} Joules (snapshot)"
+        except Exception as e:
+            return f"CPU Power (RAPL): Error: {e}"
+    return "CPU Power: Not available (no RAPL support)"
+
+def get_battery_info():
+    batt = psutil.sensors_battery()
+    if not batt:
+        return "No battery detected."
+    info = [
+        f"Battery percent: {batt.percent}%",
+        f"Plugged in: {'Yes' if batt.power_plugged else 'No'}"
+    ]
+    bat_dir = "/sys/class/power_supply/"
+    voltage = None
+    current = None
+    try:
+        for d in os.listdir(bat_dir):
+            if d.startswith("BAT"):
+                v_path = os.path.join(bat_dir, d, "voltage_now")
+                c_path = os.path.join(bat_dir, d, "current_now")
+                if os.path.exists(v_path):
+                    with open(v_path) as f:
+                        voltage = int(f.read())/1_000_000
+                        info.append(f"Voltage: {voltage:.3f} V")
+                if os.path.exists(c_path):
+                    with open(c_path) as f:
+                        current = int(f.read())/1_000_000
+                        info.append(f"Current: {current:.3f} A")
+        # If charging and both voltage/current are available, show power
+        if batt.power_plugged and voltage is not None and current is not None:
+            watts = voltage * current
+            info.append(f"Charging Power: {watts:.2f} W")
+    except Exception:
+        pass
+    return "\n".join(info)
+
+def get_gpu_power():
+    try:
+        result = subprocess.run([
+            "nvidia-smi", "--query-gpu=power.draw,power.limit", "--format=csv,noheader,nounits"
+        ], capture_output=True, text=True)
+        if result.returncode == 0:
+            power_draw, power_limit = result.stdout.strip().split(',')
+            return f"NVIDIA GPU Power Draw: {power_draw} W / Limit: {power_limit} W"
+    except FileNotFoundError:
+        pass
+    try:
+        result = subprocess.run(["sensors"], capture_output=True, text=True)
+        if result.returncode == 0:
+            lines = result.stdout.splitlines()
+            amd_lines = [l for l in lines if "amdgpu" in l or "power1" in l]
+            if amd_lines:
+                return "AMD GPU Power Info:\n" + "\n".join(amd_lines)
+    except Exception:
+        pass
+    return "GPU Power: Not available (no supported GPU detected)"
+
+def update_info():
+    info = "=== Electric Pull Monitor ===\n"
+    info += get_cpu_power() + "\n"
+    info += get_gpu_power() + "\n"
+    info += get_battery_info() + "\n"
+    info += "\nNote: Per-component voltage/wattage is only available if your hardware and drivers support it."
+    label.config(text=info)
+    root.after(17, update_info)  # ~60Hz (1000ms/60 ≈ 16.67ms)
+
+root = tk.Tk()
+root.title("Electric Pull Monitor")
+label = tk.Label(root, text="", font=("Courier", 12), justify="left", anchor="nw")
+label.pack(fill="both", expand=True, padx=10, pady=10)
+root.geometry("600x400")
+update_info()
+root.mainloop()
